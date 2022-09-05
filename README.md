@@ -1,46 +1,20 @@
-FFmpeg README
-=============
+Flootay FFmpeg
+==============
 
-FFmpeg is a collection of libraries and tools to process multimedia content
-such as audio, video, subtitles and related metadata.
+This is a fork of [FFmpeg](https://ffmpeg.org/) that just adds a video filter to overlay a [flootay](https://github.com/bpeel/flootay) script onto a video.
 
-## Libraries
+In order to enable the flootay filter, make sure you first install the flootay library somewhere so that the FFmpeg configure script can find the pkg-config file. Then enable the dependencies when you configure ffmpeg with a command like this:
 
-* `libavcodec` provides implementation of a wider range of codecs.
-* `libavformat` implements streaming protocols, container formats and basic I/O access.
-* `libavutil` includes hashers, decompressors and miscellaneous utility functions.
-* `libavfilter` provides means to alter decoded audio and video through a directed graph of connected filters.
-* `libavdevice` provides an abstraction to access capture and playback devices.
-* `libswresample` implements audio mixing and resampling routines.
-* `libswscale` implements color conversion and scaling routines.
+```bash
+./configure --enable-flootay --enable-cairo
+```
 
-## Tools
+Once FFmpeg is built you can use the filter like this:
 
-* [ffmpeg](https://ffmpeg.org/ffmpeg.html) is a command line toolbox to
-  manipulate, convert and stream multimedia content.
-* [ffplay](https://ffmpeg.org/ffplay.html) is a minimalistic multimedia player.
-* [ffprobe](https://ffmpeg.org/ffprobe.html) is a simple analysis tool to inspect
-  multimedia content.
-* Additional small tools such as `aviocat`, `ismindex` and `qt-faststart`.
+```bash
+ffmpeg -i my-input-video.mp4 \
+       -vf flootay=filename=overlay.flt \
+       my-output-video.mp4
+```
 
-## Documentation
-
-The offline documentation is available in the **doc/** directory.
-
-The online documentation is available in the main [website](https://ffmpeg.org)
-and in the [wiki](https://trac.ffmpeg.org).
-
-### Examples
-
-Coding examples are available in the **doc/examples** directory.
-
-## License
-
-FFmpeg codebase is mainly LGPL-licensed with optional components licensed under
-GPL. Please refer to the LICENSE file for detailed information.
-
-## Contributing
-
-Patches should be submitted to the ffmpeg-devel mailing list using
-`git format-patch` or `git send-email`. Github pull requests should be
-avoided because they are not part of our review process and will be ignored.
+There is some [documentation](https://github.com/bpeel/flootay/blob/main/README.md#flootay-language) about the flootay language in the flootay repo.
