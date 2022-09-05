@@ -280,6 +280,7 @@ extern const AVFilter ff_vf_flip_vulkan;
 extern const AVFilter ff_vf_floodfill;
 extern const AVFilter ff_vf_format;
 extern const AVFilter ff_vf_fps;
+extern const AVFilter ff_vf_flootay;
 extern const AVFilter ff_vf_framepack;
 extern const AVFilter ff_vf_framerate;
 extern const AVFilter ff_vf_framestep;

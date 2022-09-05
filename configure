@@ -204,7 +204,9 @@ External library support:
   --enable-avisynth        enable reading of AviSynth script files [no]
   --disable-bzlib          disable bzlib [autodetect]
   --disable-coreimage      disable Apple CoreImage framework [autodetect]
+  --enable-cairo           enable cairo [no]
   --enable-chromaprint     enable audio fingerprinting with chromaprint [no]
+  --enable-flootay         enable flootay [no]
   --enable-frei0r          enable frei0r video filtering [no]
   --enable-gcrypt          enable gcrypt, needed for rtmp(t)e support
                            if openssl, librtmp or gmp is not used [no]
@@ -1812,7 +1814,9 @@ EXTERNAL_LIBRARY_LIST="
     $EXTERNAL_LIBRARY_NONFREE_LIST
     $EXTERNAL_LIBRARY_VERSION3_LIST
     $EXTERNAL_LIBRARY_GPLV3_LIST
+    cairo
     chromaprint
+    flootay
     gcrypt
     gnutls
     jni
@@ -3681,6 +3685,7 @@ firequalizer_filter_deps="avcodec"
 firequalizer_filter_select="rdft"
 flip_vulkan_filter_deps="vulkan spirv_compiler"
 flite_filter_deps="libflite"
+flootay_filter_deps="flootay cairo"
 framerate_filter_select="scene_sad"
 freezedetect_filter_select="scene_sad"
 frei0r_deps_any="libdl LoadLibrary"
@@ -6560,6 +6565,7 @@ done
 enabled avisynth          && { require_headers "avisynth/avisynth_c.h avisynth/avs/version.h" &&
                                { test_cpp_condition avisynth/avs/version.h "AVS_MAJOR_VER >= 3 && AVS_MINOR_VER >= 7 && AVS_BUGFIX_VER >= 1 || AVS_MAJOR_VER >= 3 && AVS_MINOR_VER > 7 || AVS_MAJOR_VER > 3" ||
                                  die "ERROR: AviSynth+ header version must be >= 3.7.1"; } }
+enabled cairo             && require_pkg_config cairo "cairo" cairo.h cairo_create
 enabled cuda_nvcc         && { check_nvcc cuda_nvcc || die "ERROR: failed checking for nvcc."; }
 enabled chromaprint       && require chromaprint chromaprint.h chromaprint_get_version -lchromaprint
 enabled decklink          && { require_headers DeckLinkAPI.h &&
@@ -6594,6 +6600,7 @@ enabled libfdk_aac        && { check_pkg_config libfdk_aac fdk-aac "fdk-aac/aace
 flite_extralibs="-lflite_cmu_time_awb -lflite_cmu_us_awb -lflite_cmu_us_kal -lflite_cmu_us_kal16 -lflite_cmu_us_rms -lflite_cmu_us_slt -lflite_usenglish -lflite_cmulex -lflite"
 enabled libflite          && require libflite "flite/flite.h" flite_init $flite_extralibs
 enabled fontconfig        && enable libfontconfig
+enabled flootay           && require_pkg_config flootay "flootay" flootay.h flootay_new
 enabled libfontconfig     && require_pkg_config libfontconfig fontconfig "fontconfig/fontconfig.h" FcInit
 enabled libfreetype       && require_pkg_config libfreetype freetype2 "ft2build.h FT_FREETYPE_H" FT_Init_FreeType
 enabled libfribidi        && require_pkg_config libfribidi fribidi fribidi.h fribidi_version_info

@@ -300,6 +300,7 @@ OBJS-$(CONFIG_FIELDORDER_FILTER)             += vf_fieldorder.o
 OBJS-$(CONFIG_FILLBORDERS_FILTER)            += vf_fillborders.o
 OBJS-$(CONFIG_FIND_RECT_FILTER)              += vf_find_rect.o lavfutils.o
 OBJS-$(CONFIG_FLOODFILL_FILTER)              += vf_floodfill.o
+OBJS-$(CONFIG_FLOOTAY_FILTER)                += vf_flootay.o
 OBJS-$(CONFIG_FORMAT_FILTER)                 += vf_format.o
 OBJS-$(CONFIG_FPS_FILTER)                    += vf_fps.o
 OBJS-$(CONFIG_FRAMEPACK_FILTER)              += vf_framepack.o
