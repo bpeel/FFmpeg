@@ -32,6 +32,7 @@
 #include "config_components.h"
 #include "libavcodec/avcodec.h"
 #include "libavformat/avformat.h"
+#include "libavfilter/colorspace.h"
 #include "libavutil/avstring.h"
 #include "libavutil/imgutils.h"
 #include "libavutil/opt.h"
@@ -49,6 +50,9 @@ typedef struct FlootayContext {
     char *filename;
     cairo_surface_t *surface;
     cairo_t *cr;
+    double rgb2yuv[3][3];
+    double y_multiply, y_add;
+    double uv_multiply, uv_add;
 } FlootayContext;
 
 #define OFFSET(x) offsetof(FlootayContext, x)
@@ -86,24 +90,6 @@ static av_cold void uninit(AVFilterContext *ctx)
         cairo_surface_destroy(flt->surface);
 }
 
-static int query_formats(AVFilterContext *ctx)
-{
-    AVFilterFormats *fmts = NULL;
-    int ret;
-
-    static const int64_t formats[] = {
-        AV_PIX_FMT_BGR24,
-        AV_PIX_FMT_YUV420P,
-    };
-
-    for (int i = 0; i < FF_ARRAY_ELEMS(formats); i++) {
-        if ((ret = ff_add_format(&fmts, formats[i])) < 0)
-            return ret;
-    }
-
-    return ff_set_common_formats(ctx, fmts);
-}
-
 static int config_input(AVFilterLink *inlink)
 {
     FlootayContext *flt = inlink->dst->priv;
@@ -115,7 +101,7 @@ static int config_input(AVFilterLink *inlink)
     return 0;
 }
 
-static void blend_surface_rgb(FlootayContext *flt, AVFrame *picref)
+static int blend_surface_rgb(FlootayContext *flt, AVFrame *picref)
 {
     const uint8_t *src = cairo_image_surface_get_data(flt->surface);
     int src_stride = cairo_image_surface_get_stride(flt->surface);
@@ -143,16 +129,19 @@ static void blend_surface_rgb(FlootayContext *flt, AVFrame *picref)
         src += src_stride - width * 4;
         dst += dst_stride - width * 3;
     }
+
+    return 0;
 }
 
-static void rgb_to_yuv(const uint8_t *src,
+static void rgb_to_yuv(FlootayContext *flt,
+                       const uint8_t *src,
                        int src_stride,
                        uint8_t y_out[4],
                        uint8_t a[4],
                        uint8_t *u,
                        uint8_t *v)
 {
-    uint8_t r, g, b;
+    double rgbd[3], yuvd[3];
     int u_sum = 0, v_sum = 0;
     uint32_t src_pixel;
     int i = 0;
@@ -161,18 +150,25 @@ static void rgb_to_yuv(const uint8_t *src,
         for (int x = 0; x < 2; x++) {
             memcpy(&src_pixel, src + x * 4 + y * src_stride, sizeof src_pixel);
             a[i] = src_pixel >> 24;
-            r = (src_pixel >> 16) & 0xff;
-            g = (src_pixel >> 8) & 0xff;
-            b = src_pixel & 0xff;
+            rgbd[0] = ((src_pixel >> 16) & 0xff) / 255.0;
+            rgbd[1] = ((src_pixel >> 8) & 0xff) / 255.0;
+            rgbd[2] = (src_pixel & 0xff) / 255.0;
             /* unpremultiply */
             if (a[i] != 0) {
-                r = r * 255 / a[i];
-                g = g * 255 / a[i];
-                b = b * 255 / a[i];
+                for (int c = 0; c < 3; c++)
+                    rgbd[c] = rgbd[c] * 255 / a[i];
             }
-            y_out[i] = RGB_TO_Y_CCIR(r, g, b);
-            u_sum += RGB_TO_U_CCIR(r, g, b, 0);
-            v_sum += RGB_TO_V_CCIR(r, g, b, 0);
+            ff_matrix_mul_3x3_vec(yuvd, rgbd, flt->rgb2yuv);
+            yuvd[0] *= flt->y_multiply;
+            yuvd[0] += flt->y_add;
+            yuvd[1] *= flt->uv_multiply;
+            yuvd[1] += flt->uv_add;
+            yuvd[2] *= flt->uv_multiply;
+            yuvd[2] += flt->uv_add;
+
+            y_out[i] = yuvd[0] * 255.0 + 0.5f;
+            u_sum += yuvd[1] * 255.0 + 0.5f;
+            v_sum += yuvd[2] * 255.0 + 0.5f;
             i++;
         }
     }
@@ -202,7 +198,41 @@ static void blend_y(uint8_t *dst,
     }
 }
 
-static void blend_surface_yuv(FlootayContext *flt, AVFrame *picref)
+static int init_rgb2yuv(FlootayContext *flt, AVFrame *picref)
+{
+    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(picref->format);
+    enum AVColorSpace csp = picref->colorspace;
+    const AVLumaCoefficients *luma;
+
+    if (!desc)
+        return AVERROR(EINVAL);
+
+    if (csp == AVCOL_SPC_UNSPECIFIED)
+        csp = AVCOL_SPC_SMPTE170M;
+
+    luma = av_csp_luma_coeffs_from_avcsp(csp);
+
+    if (!luma)
+        return AVERROR(EINVAL);
+
+    ff_fill_rgb2yuv_table(luma, flt->rgb2yuv);
+
+    if (picref->color_range == AVCOL_RANGE_MPEG) {
+        flt->y_multiply = 219.0 / 255.0;
+        flt->y_add = 16.0 / 255.0;
+        flt->uv_multiply = 224.0 / 255.0;
+        flt->uv_add = 128.0 / 255.0;
+    } else {
+        flt->y_multiply = 1.0;
+        flt->y_add = 0.0;
+        flt->uv_multiply = 1.0;
+        flt->uv_add = 0.5;
+    }
+
+    return 0;
+}
+
+static int blend_surface_yuv(FlootayContext *flt, AVFrame *picref)
 {
     const uint8_t *src = cairo_image_surface_get_data(flt->surface);
     int src_stride = cairo_image_surface_get_stride(flt->surface);
@@ -216,10 +246,14 @@ static void blend_surface_yuv(FlootayContext *flt, AVFrame *picref)
     int height = picref->height;
     uint8_t y_comp[4], a[4], u, v;
     int a_avg;
+    int ret;
+
+    if ((ret = init_rgb2yuv(flt, picref)))
+        return ret;
 
     for (int y = 0; y < height; y += 2) {
         for (int x = 0; x < width; x += 2) {
-            rgb_to_yuv(src, src_stride, y_comp, a, &u, &v);
+            rgb_to_yuv(flt, src, src_stride, y_comp, a, &u, &v);
 
             blend_y(dst_y, dst_y_stride, y_comp, a);
 
@@ -242,6 +276,8 @@ static void blend_surface_yuv(FlootayContext *flt, AVFrame *picref)
         dst_u += dst_u_stride - width / 2;
         dst_v += dst_v_stride - width / 2;
     }
+
+    return 0;
 }
 
 static int filter_frame(AVFilterLink *inlink, AVFrame *picref)
@@ -250,6 +286,7 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *picref)
     AVFilterLink *outlink = ctx->outputs[0];
     FlootayContext *flt = ctx->priv;
     double timestamp = picref->pts * av_q2d(inlink->time_base);
+    int ret;
 
     if (!flootay_render(flt->flootay,
                         flt->cr,
@@ -264,9 +301,12 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *picref)
     cairo_surface_flush(flt->surface);
 
     if (picref->format == AV_PIX_FMT_BGR24)
-        blend_surface_rgb(flt, picref);
+        ret = blend_surface_rgb(flt, picref);
     else
-        blend_surface_yuv(flt, picref);
+        ret = blend_surface_yuv(flt, picref);
+
+    if (ret)
+        return ret;
 
     return ff_filter_frame(outlink, picref);
 }
@@ -347,6 +387,13 @@ static av_cold int init_flt(AVFilterContext *ctx)
     return 0;
 }
 
+static const enum AVPixelFormat pix_fmts[] = {
+    AV_PIX_FMT_BGR24,
+    AV_PIX_FMT_YUV420P,
+    AV_PIX_FMT_YUVJ420P,
+    AV_PIX_FMT_NONE
+};
+
 const AVFilter ff_vf_flootay = {
     .name          = "flootay",
     .description   = NULL_IF_CONFIG_SMALL("Render a flootay script onto input video."),
@@ -355,6 +402,6 @@ const AVFilter ff_vf_flootay = {
     .uninit        = uninit,
     FILTER_INPUTS(flt_inputs),
     FILTER_OUTPUTS(flt_outputs),
-    FILTER_QUERY_FUNC(query_formats),
+    FILTER_PIXFMTS_ARRAY(pix_fmts),
     .priv_class    = &flt_class,
 };
