@@ -37,6 +37,7 @@
 #include "libavutil/opt.h"
 #include "libavutil/parseutils.h"
 #include "libavutil/file_open.h"
+#include "libavutil/colorspace.h"
 #include "avfilter.h"
 #include "internal.h"
 #include "formats.h"
@@ -90,8 +91,15 @@ static int query_formats(AVFilterContext *ctx)
     AVFilterFormats *fmts = NULL;
     int ret;
 
-    if ((ret = ff_add_format(&fmts, AV_PIX_FMT_BGR24)) < 0)
-        return ret;
+    static const int64_t formats[] = {
+        AV_PIX_FMT_BGR24,
+        AV_PIX_FMT_YUV420P,
+    };
+
+    for (int i = 0; i < FF_ARRAY_ELEMS(formats); i++) {
+        if ((ret = ff_add_format(&fmts, formats[i])) < 0)
+            return ret;
+    }
 
     return ff_set_common_formats(ctx, fmts);
 }
@@ -107,7 +115,7 @@ static int config_input(AVFilterLink *inlink)
     return 0;
 }
 
-static void blend_surface(FlootayContext *flt, AVFrame *picref)
+static void blend_surface_rgb(FlootayContext *flt, AVFrame *picref)
 {
     const uint8_t *src = cairo_image_surface_get_data(flt->surface);
     int src_stride = cairo_image_surface_get_stride(flt->surface);
@@ -137,6 +145,105 @@ static void blend_surface(FlootayContext *flt, AVFrame *picref)
     }
 }
 
+static void rgb_to_yuv(const uint8_t *src,
+                       int src_stride,
+                       uint8_t y_out[4],
+                       uint8_t a[4],
+                       uint8_t *u,
+                       uint8_t *v)
+{
+    uint8_t r, g, b;
+    int u_sum = 0, v_sum = 0;
+    uint32_t src_pixel;
+    int i = 0;
+
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 2; x++) {
+            memcpy(&src_pixel, src + x * 4 + y * src_stride, sizeof src_pixel);
+            a[i] = src_pixel >> 24;
+            r = (src_pixel >> 16) & 0xff;
+            g = (src_pixel >> 8) & 0xff;
+            b = src_pixel & 0xff;
+            /* unpremultiply */
+            if (a[i] != 0) {
+                r = r * 255 / a[i];
+                g = g * 255 / a[i];
+                b = b * 255 / a[i];
+            }
+            y_out[i] = RGB_TO_Y_CCIR(r, g, b);
+            u_sum += RGB_TO_U_CCIR(r, g, b, 0);
+            v_sum += RGB_TO_V_CCIR(r, g, b, 0);
+            i++;
+        }
+    }
+
+    *u = u_sum / 4;
+    *v = v_sum / 4;
+}
+
+static void blend_component(uint8_t *dst, uint8_t src, uint8_t a)
+{
+    *dst = (*dst * (255 - a) + src * a) / 255;
+}
+
+static void blend_y(uint8_t *dst,
+                    int dst_stride,
+                    const uint8_t y_comp[4],
+                    const uint8_t a[4])
+{
+    int i = 0;
+
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 2; x++) {
+            blend_component(dst + x, y_comp[i], a[i]);
+            i++;
+        }
+        dst += dst_stride;
+    }
+}
+
+static void blend_surface_yuv(FlootayContext *flt, AVFrame *picref)
+{
+    const uint8_t *src = cairo_image_surface_get_data(flt->surface);
+    int src_stride = cairo_image_surface_get_stride(flt->surface);
+    uint8_t *dst_y = picref->data[0];
+    int dst_y_stride = picref->linesize[0];
+    uint8_t *dst_u = picref->data[1];
+    int dst_u_stride = picref->linesize[1];
+    uint8_t *dst_v = picref->data[2];
+    int dst_v_stride = picref->linesize[2];
+    int width = picref->width;
+    int height = picref->height;
+    uint8_t y_comp[4], a[4], u, v;
+    int a_avg;
+
+    for (int y = 0; y < height; y += 2) {
+        for (int x = 0; x < width; x += 2) {
+            rgb_to_yuv(src, src_stride, y_comp, a, &u, &v);
+
+            blend_y(dst_y, dst_y_stride, y_comp, a);
+
+            a_avg = 0;
+            for (int i = 0; i < 4; i++)
+                a_avg += a[i];
+            a_avg /= 4;
+
+            blend_component(dst_u, u, a_avg);
+            blend_component(dst_v, v, a_avg);
+
+            src += 4 * 2;
+            dst_y += 2;
+            dst_u++;
+            dst_v++;
+        }
+
+        src += src_stride * 2 - width * 4;
+        dst_y += dst_y_stride * 2 - width;
+        dst_u += dst_u_stride - width / 2;
+        dst_v += dst_v_stride - width / 2;
+    }
+}
+
 static int filter_frame(AVFilterLink *inlink, AVFrame *picref)
 {
     AVFilterContext *ctx = inlink->dst;
@@ -156,7 +263,10 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *picref)
 
     cairo_surface_flush(flt->surface);
 
-    blend_surface(flt, picref);
+    if (picref->format == AV_PIX_FMT_BGR24)
+        blend_surface_rgb(flt, picref);
+    else
+        blend_surface_yuv(flt, picref);
 
     return ff_filter_frame(outlink, picref);
 }
