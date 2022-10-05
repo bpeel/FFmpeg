@@ -49,6 +49,7 @@ typedef struct FlootayContext {
     struct flootay *flootay;
     char *filename;
     cairo_surface_t *surface;
+    bool surface_is_clear;
     cairo_t *cr;
     double rgb2yuv[3][3];
     double y_multiply, y_add;
@@ -97,6 +98,8 @@ static int config_input(AVFilterLink *inlink)
     flt->surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
                                               inlink->w, inlink->h);
     flt->cr = cairo_create(flt->surface);
+
+    flt->surface_is_clear = false;
 
     return 0;
 }
@@ -288,25 +291,43 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *picref)
     double timestamp = picref->pts * av_q2d(inlink->time_base);
     int ret;
 
-    if (!flootay_render(flt->flootay,
-                        flt->cr,
-                        timestamp)) {
+    if (!flt->surface_is_clear) {
+        cairo_save(flt->cr);
+        cairo_set_source_rgba(flt->cr, 0.0, 0.0, 0.0, 0.0);
+        cairo_set_operator(flt->cr, CAIRO_OPERATOR_SOURCE);
+        cairo_paint(flt->cr);
+        cairo_restore(flt->cr);
+
+        flt->surface_is_clear = true;
+    }
+
+    switch (flootay_render(flt->flootay,
+                           flt->cr,
+                           timestamp)) {
+    case FLOOTAY_RENDER_RESULT_ERROR:
         av_log(ctx,
                AV_LOG_ERROR,
                "Flootay rendering failed: %s\n",
                flootay_get_error(flt->flootay));
         return AVERROR_EXTERNAL;
+
+    case FLOOTAY_RENDER_RESULT_EMPTY:
+        /* Don’t need to blend the result */
+        break;
+
+    case FLOOTAY_RENDER_RESULT_OK:
+        flt->surface_is_clear = false;
+
+        cairo_surface_flush(flt->surface);
+
+        if (picref->format == AV_PIX_FMT_BGR24)
+            ret = blend_surface_rgb(flt, picref);
+        else
+            ret = blend_surface_yuv(flt, picref);
+
+        if (ret)
+            return ret;
     }
-
-    cairo_surface_flush(flt->surface);
-
-    if (picref->format == AV_PIX_FMT_BGR24)
-        ret = blend_surface_rgb(flt, picref);
-    else
-        ret = blend_surface_yuv(flt, picref);
-
-    if (ret)
-        return ret;
 
     return ff_filter_frame(outlink, picref);
 }
